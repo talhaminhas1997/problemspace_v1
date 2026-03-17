@@ -86,32 +86,9 @@ function uid() {
 const DISCOVERY_FIRST_MESSAGE =
   "What's on your mind — are you starting from a problem, an idea, or something someone else handed you?"
 
-const DISCOVERY_AGENT_RESPONSES = [
-  "Got it. Tell me more about the users this affects — who are they and what are they trying to accomplish?",
-  "Interesting. What does success look like here? Is there a metric you're trying to move?",
-  "That's helpful context. Are there any known constraints — technical, budget, or timeline?",
-  "Makes sense. Have you validated any part of this with real users yet?",
-]
-
 // Free chat constants
 const FREE_FIRST_MESSAGE =
   "What are you working on? Ask me anything — or share a document, note, or source to explore."
-
-const FREE_AGENT_RESPONSES = [
-  "Interesting. Tell me more.",
-  "Got it. What's the context around that?",
-  "That makes sense. What are you trying to figure out?",
-  "Sure. Anything specific you want me to dig into?",
-  "Happy to help with that. What would be most useful right now?",
-]
-
-const DISCOVERY_PROMPT = "I'm noticing a pattern here — want me to run you through a structured discovery cycle?"
-
-const STRUCTURED_OUTPUT: StructuredBlock = {
-  kind: 'problem',
-  title: 'Problem Statement',
-  content: `**Users:** Product managers at early-stage startups\n**Problem:** Lack of structured methodology for product discovery leads to building features that don't address core user needs\n**Impact:** Wasted engineering cycles, delayed product-market fit\n**Opportunity:** An AI-guided discovery workflow that surfaces assumptions, maps user journeys, and produces actionable briefs`,
-}
 
 const INITIAL_PROJECTS: Project[] = [
   {
@@ -382,8 +359,9 @@ export function ChatPage() {
   const [inputText, setInputText] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [recording, setRecording] = useState(false)
-  const [agentResponseIdx, setAgentResponseIdx] = useState(0)
+  const [isStreaming, setIsStreaming] = useState(false)
   const [showMoreDecisions, setShowMoreDecisions] = useState(false)
+
   const [showMoreDocs, setShowMoreDocs] = useState(false)
   const [contextCollapsed, setContextCollapsed] = useState(false)
 
@@ -431,6 +409,7 @@ export function ChatPage() {
   const sendMessage = useCallback(async () => {
     const text = inputText.trim()
     if (!text && attachments.length === 0) return
+    if (isStreaming) return
 
     const userMsg: Message = {
       id: uid(),
@@ -439,56 +418,78 @@ export function ChatPage() {
       ts: new Date(),
       attachments: attachments.length > 0 ? [...attachments] : undefined,
     }
+
+    // Build conversation history for the API (must start with user role)
+    const allMessages = [...messages, userMsg]
+    const firstUserIdx = allMessages.findIndex(m => m.role === 'user')
+    const apiMessages = allMessages.slice(firstUserIdx).map(m => ({
+      role: m.role === 'agent' ? 'assistant' as const : 'user' as const,
+      content: m.text || '…',
+    }))
+
     setMessages(prev => [...prev, userMsg])
     setInputText('')
     setAttachments([])
 
-    const userMsgCount = messages.filter(m => m.role === 'user').length + 1
-
-    await new Promise(r => setTimeout(r, 600))
-
-    let agentMsg: Message
-
+    // Advance phase in discovery mode every 2 user messages
     if (activeChatType === 'discovery') {
-      // Advance phase every 2 user messages
+      const userMsgCount = messages.filter(m => m.role === 'user').length + 1
       if (userMsgCount % 2 === 0) advancePhase()
-
-      const isDiscoveryPrompt = userMsgCount === 5
-      const showStructured = userMsgCount === 6
-
-      const agentText = isDiscoveryPrompt
-        ? DISCOVERY_PROMPT
-        : showStructured
-        ? "I've generated a Problem Statement based on our conversation:"
-        : DISCOVERY_AGENT_RESPONSES[agentResponseIdx % DISCOVERY_AGENT_RESPONSES.length]
-
-      agentMsg = {
-        id: uid(),
-        role: 'agent',
-        text: agentText,
-        ts: new Date(),
-        streaming: true,
-        showDiscoveryPrompt: isDiscoveryPrompt,
-        structuredBlock: showStructured ? STRUCTURED_OUTPUT : undefined,
-      }
-
-      if (!isDiscoveryPrompt && !showStructured) {
-        setAgentResponseIdx(prev => prev + 1)
-      }
-    } else {
-      // Free chat — just natural responses, no phases or structured blocks
-      agentMsg = {
-        id: uid(),
-        role: 'agent',
-        text: FREE_AGENT_RESPONSES[agentResponseIdx % FREE_AGENT_RESPONSES.length],
-        ts: new Date(),
-        streaming: true,
-      }
-      setAgentResponseIdx(prev => prev + 1)
     }
 
-    setMessages(prev => [...prev, agentMsg])
-  }, [inputText, attachments, messages, agentResponseIdx, advancePhase, activeChatType])
+    // Create streaming placeholder
+    const agentMsgId = uid()
+    setMessages(prev => [...prev, { id: agentMsgId, role: 'agent', text: '', ts: new Date(), streaming: true }])
+    setIsStreaming(true)
+
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: apiMessages, chatType: activeChatType, phaseIdx }),
+      })
+
+      if (!res.ok || !res.body) throw new Error(`API error ${res.status}`)
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const data = line.slice(6).trim()
+          if (data === '[DONE]') continue
+          try {
+            const { text: delta } = JSON.parse(data)
+            if (delta) {
+              setMessages(prev =>
+                prev.map(m => m.id === agentMsgId ? { ...m, text: m.text + delta } : m)
+              )
+            }
+          } catch { /* ignore malformed chunks */ }
+        }
+      }
+    } catch (err) {
+      console.error('Chat error:', err)
+      setMessages(prev =>
+        prev.map(m => m.id === agentMsgId
+          ? { ...m, text: 'Something went wrong. Please try again.' }
+          : m
+        )
+      )
+    } finally {
+      setMessages(prev => prev.map(m => m.id === agentMsgId ? { ...m, streaming: false } : m))
+      setIsStreaming(false)
+    }
+  }, [inputText, attachments, messages, isStreaming, advancePhase, activeChatType, phaseIdx])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -524,7 +525,6 @@ export function ChatPage() {
     setMessages([])
     setPhase('Framing')
     setPhaseIdx(0)
-    setAgentResponseIdx(0)
     setNewChatPickerProjectId(null)
   }
 
@@ -562,7 +562,6 @@ export function ChatPage() {
     setMessages([])
     setPhase('Framing')
     setPhaseIdx(0)
-    setAgentResponseIdx(0)
   }
 
   return (
