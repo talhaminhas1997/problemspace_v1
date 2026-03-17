@@ -28,6 +28,7 @@ interface Message {
   text: string
   ts: Date
   streaming?: boolean
+  typewriter?: boolean  // true only for the initial greeting (uses TypewriterText)
   structuredBlock?: StructuredBlock
   showDiscoveryPrompt?: boolean
   attachments?: Attachment[]
@@ -383,6 +384,7 @@ export function ChatPage() {
         text: activeChatType === 'discovery' ? DISCOVERY_FIRST_MESSAGE : FREE_FIRST_MESSAGE,
         ts: new Date(),
         streaming: true,
+        typewriter: true,
       }
       setMessages([firstMsg])
     }, 400)
@@ -886,10 +888,21 @@ export function ChatPage() {
                             }
                       }
                     >
-                      {msg.role === 'agent' && msg.streaming ? (
+                      {msg.role === 'agent' && msg.streaming && msg.typewriter ? (
                         <TypewriterText text={msg.text} onDone={() => {
                           setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, streaming: false } : m))
                         }} />
+                      ) : msg.role === 'agent' && msg.streaming ? (
+                        <span>
+                          {msg.text || (
+                            <span className="inline-flex gap-0.5 items-center">
+                              {[0, 1, 2].map(i => (
+                                <span key={i} className="w-1 h-1 rounded-full" style={{ background: 'rgba(255,255,255,0.3)', animation: `bounce 1.2s ease-in-out ${i * 0.2}s infinite` }} />
+                              ))}
+                            </span>
+                          )}
+                          {msg.text && <span className="inline-block w-0.5 h-3 ml-0.5 align-middle animate-pulse" style={{ background: 'rgba(255,255,255,0.4)' }} />}
+                        </span>
                       ) : (
                         msg.text
                       )}

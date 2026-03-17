@@ -44,6 +44,11 @@
 }
 
 
+@keyframes bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.3; }
+  40% { transform: translateY(-4px); opacity: 1; }
+}
+
 @keyframes rotate-conic {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
