@@ -1,6 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { IncomingMessage, ServerResponse } from 'http'
 
+export const config = { maxDuration: 60 }
+
 const PHASES = ['Framing', 'Planning', 'Ideation', 'Complete']
 
 const FREE_SYSTEM = `You are an AI assistant built for product managers. You help think through product problems, strategy, user research, prioritization, roadmapping, and anything related to building great products. Be concise and direct. Ask one focused clarifying question when it moves the conversation forward.`
@@ -32,25 +34,47 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     req.on('error', reject)
   })
 
-  const { messages, chatType, phaseIdx } = JSON.parse(body)
+  let messages: Anthropic.MessageParam[], chatType: string, phaseIdx: number
+  try {
+    ;({ messages, chatType, phaseIdx } = JSON.parse(body))
+  } catch {
+    res.writeHead(400)
+    res.end('Bad Request')
+    return
+  }
 
   const phase = PHASES[phaseIdx] ?? 'Framing'
   const system = chatType === 'discovery' ? discoverySystem(phase) : FREE_SYSTEM
 
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
+    'Cache-Control': 'no-cache, no-transform',
     'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
   })
 
+  // Flush headers immediately
+  if (typeof (res as { flushHeaders?: () => void }).flushHeaders === 'function') {
+    ;(res as { flushHeaders: () => void }).flushHeaders()
+  }
+
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (!apiKey) {
+    res.write(`data: ${JSON.stringify({ text: '[Error: ANTHROPIC_API_KEY not configured]' })}\n\n`)
+    res.write('data: [DONE]\n\n')
+    res.end()
+    return
+  }
+
+  const client = new Anthropic({ apiKey })
+
   try {
-    const stream = client.messages.stream({
+    const stream = await client.messages.create({
       model: 'claude-opus-4-6',
       max_tokens: 1024,
       system,
       messages,
+      stream: true,
     })
 
     for await (const event of stream) {
@@ -61,8 +85,9 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
     res.write('data: [DONE]\n\n')
   } catch (err) {
-    console.error('Claude API error:', err)
-    res.write(`data: ${JSON.stringify({ text: 'Something went wrong. Please try again.' })}\n\n`)
+    const message = err instanceof Error ? err.message : String(err)
+    console.error('Claude API error:', message)
+    res.write(`data: ${JSON.stringify({ text: `[API Error: ${message}]` })}\n\n`)
   }
 
   res.end()
