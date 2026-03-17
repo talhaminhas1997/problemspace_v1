@@ -4,11 +4,13 @@ import { ArrowRight } from 'lucide-react'
 interface CTAButtonProps {
   children?: React.ReactNode
   onClick?: () => void
+  href?: string
 }
 
-export function CTAButton({ children = 'Get early access', onClick }: CTAButtonProps) {
+export function CTAButton({ children = 'Get early access', onClick, href = '/auth' }: CTAButtonProps) {
   return (
-    <motion.button
+    <motion.a
+      href={href}
       whileHover={{ scale: 1.02 }}
       whileTap={{ scale: 0.98 }}
       onClick={onClick}
@@ -17,6 +19,7 @@ export function CTAButton({ children = 'Get early access', onClick }: CTAButtonP
         backgroundColor: 'hsl(var(--foreground))',
         color: 'hsl(var(--background))',
         fontFamily: 'Space Grotesk, sans-serif',
+        textDecoration: 'none',
       }}
     >
       {/* Shimmer overlay */}
@@ -33,6 +36,6 @@ export function CTAButton({ children = 'Get early access', onClick }: CTAButtonP
       />
       <span className="relative z-10">{children}</span>
       <ArrowRight size={14} className="relative z-10 transition-transform group-hover:translate-x-0.5" />
-    </motion.button>
+    </motion.a>
   )
 }

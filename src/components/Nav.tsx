@@ -50,6 +50,18 @@ export function Nav({ theme, onToggleTheme }: NavProps) {
       {/* Right side */}
       <div className="flex items-center gap-6">
         <a
+          href="/auth"
+          className="text-sm transition-colors"
+          style={{
+            fontFamily: 'Space Grotesk, sans-serif',
+            color: 'hsl(var(--muted))',
+          }}
+          onMouseEnter={e => ((e.target as HTMLElement).style.color = 'hsl(var(--foreground))')}
+          onMouseLeave={e => ((e.target as HTMLElement).style.color = 'hsl(var(--muted))')}
+        >
+          Sign in
+        </a>
+        <a
           href="#contact"
           className="text-sm transition-colors"
           style={{
