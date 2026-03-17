@@ -1,8 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-
-export const config = {
-  runtime: 'edge',
-}
+import type { IncomingMessage, ServerResponse } from 'http'
 
 const PHASES = ['Framing', 'Planning', 'Ideation', 'Complete']
 
@@ -17,59 +14,56 @@ Phase context:
 - Ideation: Generate and evaluate ideas, surface assumptions, explore approaches.
 - Complete: Synthesize the conversation into a structured output.
 
-Guide through focused questions — one per response. Be direct and concise. Do not lecture. When you have enough context, produce a structured summary using this format exactly:
-
-[PROBLEM_STATEMENT]
-Users: <who is affected>
-Problem: <core pain or gap>
-Impact: <why it matters>
-Opportunity: <what could be different>
-[/PROBLEM_STATEMENT]`
+Guide through focused questions — one per response. Be direct and concise. Do not lecture.`
 }
 
-export default async function handler(req: Request) {
+export default async function handler(req: IncomingMessage, res: ServerResponse) {
   if (req.method !== 'POST') {
-    return new Response('Method Not Allowed', { status: 405 })
+    res.writeHead(405)
+    res.end('Method Not Allowed')
+    return
   }
 
-  const { messages, chatType, phaseIdx } = await req.json()
+  // Parse body
+  const body = await new Promise<string>((resolve, reject) => {
+    let data = ''
+    req.on('data', chunk => { data += chunk })
+    req.on('end', () => resolve(data))
+    req.on('error', reject)
+  })
+
+  const { messages, chatType, phaseIdx } = JSON.parse(body)
 
   const phase = PHASES[phaseIdx] ?? 'Framing'
   const system = chatType === 'discovery' ? discoverySystem(phase) : FREE_SYSTEM
 
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-  const stream = client.messages.stream({
-    model: 'claude-opus-4-6',
-    max_tokens: 1024,
-    system,
-    messages,
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
   })
 
-  const readable = new ReadableStream({
-    async start(controller) {
-      const encoder = new TextEncoder()
-      try {
-        for await (const event of stream) {
-          if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-            controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ text: event.delta.text })}\n\n`)
-            )
-          }
-        }
-        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
-      } catch (err) {
-        controller.error(err)
+  try {
+    const stream = client.messages.stream({
+      model: 'claude-opus-4-6',
+      max_tokens: 1024,
+      system,
+      messages,
+    })
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        res.write(`data: ${JSON.stringify({ text: event.delta.text })}\n\n`)
       }
-      controller.close()
-    },
-  })
+    }
 
-  return new Response(readable, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-    },
-  })
+    res.write('data: [DONE]\n\n')
+  } catch (err) {
+    console.error('Claude API error:', err)
+    res.write(`data: ${JSON.stringify({ text: 'Something went wrong. Please try again.' })}\n\n`)
+  }
+
+  res.end()
 }
